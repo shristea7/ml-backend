@@ -1,33 +1,13 @@
+# Simple symptom detection using keyword matching
+COMMON_SYMPTOMS = [
+    "fever", "vomiting", "nausea", "headache", "cough",
+    "sore throat", "diarrhea", "stomach ache", "fatigue"
+]
 
-import json
-from sentence_transformers import SentenceTransformer, util
-
-# Load medicine dataset
-with open("data/medicines_1000.json") as f:
-    medicines = json.load(f)
-
-# Initialize embedding model
-model = SentenceTransformer('all-MiniLM-L6-v2')
-
-# Precompute medicine uses embeddings
-medicine_uses = [", ".join(med.get("uses", [])) for med in medicines]
-medicine_embeddings = model.encode(medicine_uses, convert_to_tensor=True)
-
-def detect_symptoms(user_input, top_k=7):
+def detect_symptoms(user_message):
     """
-    Detects top medicines for given symptom or user text.
-    Returns top_k medicines (id, name, brand).
+    Returns only actual symptoms mentioned in user input.
     """
-    query_emb = model.encode(user_input, convert_to_tensor=True)
-    scores = util.cos_sim(query_emb, medicine_embeddings)[0]
-    top_indices = scores.topk(top_k).indices.tolist()
-    
-    result = []
-    for idx in top_indices:
-        med = medicines[idx]
-        result.append({
-            "id": med["id"],
-            "name": med["name"],
-            "brand": med.get("brand", "")
-        })
-    return result
+    message_words = user_message.lower().split()
+    detected = [sym for sym in COMMON_SYMPTOMS if sym in message_words]
+    return detected
