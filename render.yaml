@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: medley-ml-backend
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port 10000"
+    envVars:
+      - key: ENV
+        value: production
+    autoDeploy: true
+    healthCheckPath: /docs
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
