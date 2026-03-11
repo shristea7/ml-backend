@@ -4,6 +4,7 @@ COMMON_SYMPTOMS = [
     "sore throat", "diarrhea", "stomach ache", "fatigue"
 ]
 
+
 def detect_symptoms(user_message):
     """
     Returns only actual symptoms mentioned in user input.

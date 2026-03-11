@@ -12,6 +12,7 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 medicine_uses = [", ".join(med.get("uses", [])) for med in medicines]
 medicine_embeddings = model.encode(medicine_uses, convert_to_tensor=True)
 
+
 def detect_symptoms(user_input, top_k=7):
     """
     Detects top medicines for given symptom or user text.
@@ -20,7 +21,7 @@ def detect_symptoms(user_input, top_k=7):
     query_emb = model.encode(user_input, convert_to_tensor=True)
     scores = util.cos_sim(query_emb, medicine_embeddings)[0]
     top_indices = scores.topk(top_k).indices.tolist()
-    
+
     result = []
     for idx in top_indices:
         med = medicines[idx]

@@ -10,7 +10,8 @@ app = FastAPI(title="Medical Symptom Checker API")
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., description="User query (symptoms or medicine name)")
+    message: str = Field(...,
+                         description="User query (symptoms or medicine name)")
     top_shops: int | None = Field(
         None,
         description="(Optional) number of top shops to return. Defaults to 3 for symptoms queries, 5 for medicine queries.",
@@ -27,7 +28,8 @@ def chat(request: ChatRequest):
 
     message = (request.message or "").strip()
     if not message:
-        raise HTTPException(status_code=400, detail="`message` must be non-empty")
+        raise HTTPException(
+            status_code=400, detail="`message` must be non-empty")
 
     # 1) Check if the user asked for a specific medicine by name.
     medicine_matches = detect_medicine_query(message, max_results=5)

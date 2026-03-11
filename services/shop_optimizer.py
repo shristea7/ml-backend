@@ -81,7 +81,8 @@ def find_best_shops(
         if not covered:
             continue
 
-        total_price = float(group[group["medicine_id"].isin(covered)]["price"].sum())
+        total_price = float(
+            group[group["medicine_id"].isin(covered)]["price"].sum())
         distance = float(group["distance"].iloc[0])
         coverage = len(covered) / len(required_set)
 
