@@ -1,56 +1,68 @@
-
-import json
-import re
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-SHOPS_FILE = DATA_DIR / "shops_1000.json"
-
-_shop_df: Optional[pd.DataFrame] = None
-
-
-def _convert_distance(distance: str) -> float:
-    """Convert distance strings like '50 metres' or '1.2 km' into a float."""
-    if distance is None:
-        return 0.0
-
-    s = str(distance)
-    match = re.search(r"[\d.,]+", s)
-    if not match:
-        return 0.0
-
-    return float(match.group(0).replace(",", ""))
+from db import get_db
 
 
 def _load_shop_dataframe() -> pd.DataFrame:
-    global _shop_df
-    if _shop_df is not None:
-        return _shop_df
+    """Load shop-medicine data from MongoDB into a pandas DataFrame."""
+    # Always fetch fresh data from MongoDB (no caching to avoid stale data)
+    try:
+        db = get_db()
 
-    with open(SHOPS_FILE, encoding="utf-8") as f:
-        data = json.load(f)
+        # Fetch all shop-medicine relationships from correct collection name
+        shop_medicines = list(db.shopmedicines.find({}))
+        print(
+            f"[Shop Optimizer] Found {len(shop_medicines)} shop-medicine relationships")
 
-    rows: List[Dict] = []
+        if not shop_medicines:
+            print("[Shop Optimizer] No shop-medicine data found in database")
+            return pd.DataFrame(columns=[
+                "shop_id", "shop_name", "distance", "medicine_id", "price", "quantity"
+            ])
 
-    for shop in data:
-        dist = _convert_distance(shop.get("distance_from_user"))
-        for med in shop.get("medicines", []):
-            rows.append(
-                {
-                    "shop_id": shop.get("id"),
-                    "shop_name": shop.get("name"),
-                    "distance": dist,
-                    "medicine_id": med.get("medicine_id"),
-                    "price": med.get("price", 0),
-                    "quantity": med.get("quantity", 0),
-                }
-            )
+        # Fetch shops to get their names and distances
+        shops_list = list(db.shops.find({}))
+        shops = {str(shop["_id"]): shop for shop in shops_list}
+        print(f"[Shop Optimizer] Found {len(shops)} shops")
 
-    _shop_df = pd.DataFrame(rows)
-    return _shop_df
+        # Fetch medicines to map ObjectId to medicineId
+        medicines_list = list(db.medicines.find({}))
+        medicines = {str(med["_id"]): med for med in medicines_list}
+        print(f"[Shop Optimizer] Found {len(medicines)} medicines")
+
+        rows: List[Dict] = []
+
+        for shop_med in shop_medicines:
+            shop_id = str(shop_med.get("shop"))
+            med_obj_id = str(shop_med.get("medicine"))
+
+            shop = shops.get(shop_id)
+            medicine = medicines.get(med_obj_id)
+
+            if not shop or not medicine:
+                continue
+
+            rows.append({
+                "shop_id": shop.get("shopId", shop_id),
+                "shop_name": shop.get("name", ""),
+                "distance": shop.get("distance_from_user", 0.0),
+                # Use medicineId for matching
+                "medicine_id": medicine.get("medicineId", med_obj_id),
+                "price": float(shop_med.get("price", 0)),
+                "quantity": int(shop_med.get("quantity", 0)),
+            })
+
+        df = pd.DataFrame(rows)
+        print(f"[Shop Optimizer] Loaded dataframe with {len(df)} rows")
+        return df
+
+    except Exception as e:
+        print(f"[Shop Optimizer] Error loading shop data from MongoDB: {e}")
+        return pd.DataFrame(columns=[
+            "shop_id", "shop_name", "distance", "medicine_id", "price", "quantity"
+        ])
 
 
 def find_best_shops(
@@ -71,6 +83,9 @@ def find_best_shops(
         return []
 
     df = _load_shop_dataframe()
+
+    if df.empty:
+        return []
 
     required_set = set(required_medicine_ids)
     best_shops: List[Dict] = []
