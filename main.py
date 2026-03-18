@@ -1,12 +1,24 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from services.medicine_lookup import detect_medicine_query
 from services.shop_optimizer import find_best_shops
 from services.symptoms_model import detect_symptoms
+from services.visit_plan_optimizer import optimize_visit_plan
 
 
 app = FastAPI(title="Medical Symptom Checker API")
+
+# Add CORS middleware to handle preflight requests
+app.add_middleware(
+    CORSMiddleware,
+    # Allow all origins (can be restricted to specific domains)
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 
 class SymptomsRequest(BaseModel):
@@ -24,6 +36,18 @@ class MedicinesRequest(BaseModel):
     top_shops: int | None = Field(
         None,
         description="(Optional) number of top shops to return. Defaults to 5.",
+    )
+
+
+class CartItem(BaseModel):
+    medicine_id: str = Field(..., description="Medicine ID")
+    quantity: int = Field(default=1, description="Quantity needed")
+
+
+class OptimizeCartRequest(BaseModel):
+    cart_items: list[CartItem] = Field(
+        ...,
+        description="List of medicine IDs and quantities in the user's cart"
     )
 
 
@@ -174,6 +198,31 @@ def chat(request: SymptomsRequest | MedicinesRequest):
     }
 
 
-if __name__ == "__main__":
+@app.post("/optimize-cart")
+def optimize_cart_endpoint(request: OptimizeCartRequest):
+    """Generates an optimized visit plan to collect all medicines in the user's cart.
+
+    Takes a list of medicines and their quantities, then uses a greedy algorithm
+    to determine the best shops to visit in order (prioritized by coverage and distance).
+
+    Returns shops sorted by nearest first, with the medicines to collect at each shop.
+    """
+
+    if not request.cart_items:
+        raise HTTPException(
+            status_code=400, detail="cart_items must not be empty")
+
+    medicine_ids = [item.medicine_id for item in request.cart_items]
+    quantities = [item.quantity for item in request.cart_items]
+
+    print(
+        f"[Optimize Cart] Optimizing visit plan for {len(medicine_ids)} medicines: {medicine_ids}")
+
+    visit_plan = optimize_visit_plan(medicine_ids, quantities)
+
+    print(
+        f"[Optimize Cart] Generated plan with {len(visit_plan['stops'])} stops")
+
+    return visit_plan
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
