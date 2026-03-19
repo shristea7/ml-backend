@@ -224,5 +224,8 @@ def optimize_cart_endpoint(request: OptimizeCartRequest):
         f"[Optimize Cart] Generated plan with {len(visit_plan['stops'])} stops")
 
     return visit_plan
+
+
+if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=False)
