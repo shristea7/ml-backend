@@ -48,10 +48,10 @@ def _load_shop_dataframe() -> pd.DataFrame:
         for med in shop.get("medicines", []):
             rows.append(
                 {
-                    "shop_id": shop.get("id"),
+                    "shop_id": str(shop.get("id")),  # ✅ ensure string
                     "shop_name": shop.get("name"),
                     "distance": dist,
-                    "medicine_id": med.get("medicine_id"),
+                    "medicine_id": med.get("medicine_id"),  # ⚠️ must match JSON
                     "price": med.get("price", 0),
                     "quantity": med.get("quantity", 0),
                 }
@@ -59,12 +59,17 @@ def _load_shop_dataframe() -> pd.DataFrame:
 
     _shop_df = pd.DataFrame(rows)
 
+    print("[DEBUG] Loaded DataFrame:")
+    print(_shop_df.head())
+
     return _shop_df
 
 
 def normalize(series):
-    """Min-max normalization"""
-    return (series - series.min()) / (series.max() - series.min() + 1e-9)
+    """Min-max normalization (safe)"""
+    if series.max() == series.min():
+        return pd.Series([0.0] * len(series))
+    return (series - series.min()) / (series.max() - series.min())
 
 
 def find_best_shops(
@@ -87,11 +92,14 @@ def find_best_shops(
 
     results = []
 
+    # =========================
     # SINGLE SHOP SEARCH
+    # =========================
     for shop_id, group in df.groupby("shop_id"):
 
-        meds_available = set(group["medicine_id"])
+        shop_id = str(shop_id)  # ✅ ensure string
 
+        meds_available = set(group["medicine_id"])
         covered = required_set & meds_available
 
         if not covered:
@@ -101,10 +109,10 @@ def find_best_shops(
         total_price = 0
 
         for med in covered:
-
             req_qty = required_medicines[med]
 
-            row = group[group["medicine_id"] == med].iloc[0]
+            # ✅ pick cheapest option
+            row = group[group["medicine_id"] == med].sort_values("price").iloc[0]
 
             if row["quantity"] < req_qty:
                 valid = False
@@ -116,28 +124,29 @@ def find_best_shops(
             continue
 
         distance = group["distance"].iloc[0]
-
         coverage = len(covered) / len(required_set)
 
         results.append(
             {
-                "shops": [shop_id],
+                "shops": [shop_id],  # ✅ always list
                 "distance": distance,
                 "price": total_price,
                 "coverage": coverage,
             }
         )
 
-    # MULTI SHOP (2 shop combinations)
-
+    # =========================
+    # MULTI SHOP (2 shops)
+    # =========================
     shop_groups = list(df.groupby("shop_id"))
 
     for (id1, g1), (id2, g2) in combinations(shop_groups, 2):
 
+        id1, id2 = str(id1), str(id2)  # ✅ ensure string
+
         combined = pd.concat([g1, g2])
 
         meds_available = set(combined["medicine_id"])
-
         covered = required_set & meds_available
 
         if not covered:
@@ -147,7 +156,6 @@ def find_best_shops(
         total_price = 0
 
         for med in covered:
-
             req_qty = required_medicines[med]
 
             med_rows = combined[combined["medicine_id"] == med]
@@ -158,6 +166,7 @@ def find_best_shops(
                 valid = False
                 break
 
+            # ✅ cheapest across both shops
             cheapest = med_rows.sort_values("price").iloc[0]
 
             total_price += cheapest["price"] * req_qty
@@ -166,7 +175,6 @@ def find_best_shops(
             continue
 
         distance = g1["distance"].iloc[0] + g2["distance"].iloc[0]
-
         coverage = len(covered) / len(required_set)
 
         results.append(
@@ -179,10 +187,14 @@ def find_best_shops(
         )
 
     if not results:
+        print("[DEBUG] No valid shop combinations found")
         return []
 
     results_df = pd.DataFrame(results)
 
+    # =========================
+    # NORMALIZATION + SCORING
+    # =========================
     results_df["norm_distance"] = normalize(results_df["distance"])
     results_df["norm_price"] = normalize(results_df["price"])
 
@@ -191,8 +203,14 @@ def find_best_shops(
         + w_price * results_df["norm_price"]
     )
 
+    # =========================
+    # SORTING
+    # =========================
     results_df = results_df.sort_values(
         by=["coverage", "score"], ascending=[False, True]
     )
+
+    print("=== OPTIMIZER RESULTS ===")
+    print(results_df.head())
 
     return results_df.head(top_n).to_dict(orient="records")
