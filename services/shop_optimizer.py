@@ -1,90 +1,68 @@
-import json
-import re
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 from itertools import combinations
 
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-SHOPS_FILE = DATA_DIR / "shops_1000.json"
-
-_shop_df: Optional[pd.DataFrame] = None
-
-
-def _convert_distance(distance: str) -> float:
-    if distance is None:
-        return 0.0
-
-    s = str(distance).lower()
-    match = re.search(r"[\d.]+", s)
-
-    if not match:
-        return 0.0
-
-    value = float(match.group(0))
-
-    if "km" in s:
-        value = value * 1000
-
-    return value
+from db import get_db
 
 
 def _load_shop_dataframe() -> pd.DataFrame:
-    global _shop_df
+    db = get_db()
 
-    if _shop_df is not None:
-        return _shop_df  # use cached dataframe
+    shop_medicines = list(db.shopmedicines.find({}))
+    shops_list = list(db.shops.find({}))
+    medicines_list = list(db.medicines.find({}))
 
-    with open(SHOPS_FILE, encoding="utf-8") as f:
-        data = json.load(f)
+    shops = {str(shop["_id"]): shop for shop in shops_list}
+    medicines = {str(med["_id"]): med for med in medicines_list}
 
     rows = []
 
-    for shop in data:
-        dist = _convert_distance(shop.get("distance_from_user"))
+    for shop_med in shop_medicines:
+        shop_id = str(shop_med.get("shop"))
+        med_obj_id = str(shop_med.get("medicine"))
 
-        for med in shop.get("medicines", []):
-            rows.append(
-                {
-                    "shop_id": str(shop.get("id")),  # ensure string id
-                    "shop_name": shop.get("name"),
-                    "distance": dist,
-                    "medicine_id": med.get("medicine_id"),  # must match JSON key
-                    "price": med.get("price", 0),
-                    "quantity": med.get("quantity", 0),
-                }
-            )
+        shop = shops.get(shop_id)
+        medicine = medicines.get(med_obj_id)
 
-    _shop_df = pd.DataFrame(rows)
-    return _shop_df
+        if not shop or not medicine:
+            continue
+
+        rows.append({
+            "shop_id": shop.get("shopId", shop_id),
+            "shop_name": shop.get("name", ""),
+            "distance": float(shop.get("distance_from_user", 0)),
+            "medicine_id": medicine.get("medicineId", med_obj_id),
+            "price": float(shop_med.get("price", 0)),
+            "quantity": int(shop_med.get("quantity", 0)),
+        })
+
+    return pd.DataFrame(rows)
 
 
-def normalize(series):
+def _normalize(series: pd.Series) -> pd.Series:
     if series.max() == series.min():
-        return pd.Series([0.0] * len(series))  # avoid divide by zero
+        return pd.Series([0.0] * len(series))
     return (series - series.min()) / (series.max() - series.min())
 
 
 def find_best_shops(
     required_medicines: Dict[str, int],
     top_n: int = 3,
-    w_distance: float = 0.5,
-    w_price: float = 0.5,
-):
+    w_distance: float = 0.6,
+    w_price: float = 0.4,
+) -> List[Dict]:
 
     df = _load_shop_dataframe()
-    required_set = set(required_medicines.keys())
 
+    if df.empty or not required_medicines:
+        return []
+
+    required_set = set(required_medicines.keys())
     results = []
 
-    # evaluate single shop solutions
     for shop_id, group in df.groupby("shop_id"):
-
-        shop_id = str(shop_id)
-
-        meds_available = set(group["medicine_id"])
-        covered = required_set & meds_available
+        covered = required_set & set(group["medicine_id"])
 
         if not covered:
             continue
@@ -94,7 +72,7 @@ def find_best_shops(
 
         for med in covered:
             req_qty = required_medicines[med]
-            row = group[group["medicine_id"] == med].sort_values("price").iloc[0]  # pick cheapest
+            row = group[group["medicine_id"] == med].sort_values("price").iloc[0]
 
             if row["quantity"] < req_qty:
                 valid = False
@@ -105,28 +83,19 @@ def find_best_shops(
         if not valid:
             continue
 
-        distance = group["distance"].iloc[0]
-        coverage = len(covered) / len(required_set)
+        results.append({
+            "shops": [shop_id],
+            "distance": group["distance"].iloc[0],
+            "price": total_price,
+            "coverage": len(covered) / len(required_set),
+        })
 
-        results.append(
-            {
-                "shops": [shop_id],
-                "distance": distance,
-                "price": total_price,
-                "coverage": coverage,
-            }
-        )
-
-    # evaluate 2-shop combinations
     shop_groups = list(df.groupby("shop_id"))
 
     for (id1, g1), (id2, g2) in combinations(shop_groups, 2):
-
-        id1, id2 = str(id1), str(id2)
         combined = pd.concat([g1, g2])
 
-        meds_available = set(combined["medicine_id"])
-        covered = required_set & meds_available
+        covered = required_set & set(combined["medicine_id"])
 
         if not covered:
             continue
@@ -142,42 +111,35 @@ def find_best_shops(
                 valid = False
                 break
 
-            cheapest = med_rows.sort_values("price").iloc[0]  # cheapest across shops
+            cheapest = med_rows.sort_values("price").iloc[0]
             total_price += cheapest["price"] * req_qty
 
         if not valid:
             continue
 
-        distance = g1["distance"].iloc[0] + g2["distance"].iloc[0]
-        coverage = len(covered) / len(required_set)
-
-        results.append(
-            {
-                "shops": [id1, id2],
-                "distance": distance,
-                "price": total_price,
-                "coverage": coverage,
-            }
-        )
+        results.append({
+            "shops": [id1, id2],
+            "distance": g1["distance"].iloc[0] + g2["distance"].iloc[0],
+            "price": total_price,
+            "coverage": len(covered) / len(required_set),
+        })
 
     if not results:
         return []
 
     results_df = pd.DataFrame(results)
 
-    # normalize distance and price
-    results_df["norm_distance"] = normalize(results_df["distance"])
-    results_df["norm_price"] = normalize(results_df["price"])
+    results_df["norm_distance"] = _normalize(results_df["distance"])
+    results_df["norm_price"] = _normalize(results_df["price"])
 
-    # compute weighted score
     results_df["score"] = (
         w_distance * results_df["norm_distance"]
         + w_price * results_df["norm_price"]
     )
 
-    # sort by coverage then score
     results_df = results_df.sort_values(
-        by=["coverage", "score"], ascending=[False, True]
+        by=["coverage", "score"],
+        ascending=[False, True]
     )
 
     return results_df.head(top_n).to_dict(orient="records")
