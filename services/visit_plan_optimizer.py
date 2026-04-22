@@ -1,137 +1,162 @@
-"""Service to generate visit plan from selected shops (JSON-based)."""
-
 from typing import Dict, List, Optional
-import json
-from pathlib import Path
+from bson import ObjectId
+
+from db import get_db
 
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-SHOPS_FILE = DATA_DIR / "shops_1000.json"
-
-
-def _load_data():
-    with open(SHOPS_FILE, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _parse_distance(distance):
-    # Convert distance like '1.2 km' or numeric into float (km)
-    try:
-        if isinstance(distance, (int, float)):
-            return float(distance)
-        return float(str(distance).split()[0])
-    except:
-        return 0.0
+def convert_objectid(obj):
+    if isinstance(obj, dict):
+        return {k: convert_objectid(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_objectid(v) for v in obj]
+    elif isinstance(obj, ObjectId):
+        return str(obj)
+    return obj
 
 
 def optimize_visit_plan(
-    selected_shop_ids: List[str],
     medicine_ids: List[str],
     quantities: Optional[List[int]] = None,
 ) -> Dict:
-    # Generate visit plan using selected shops from optimizer
 
-    if not selected_shop_ids or not medicine_ids:
+    if not medicine_ids:
         return {"stops": [], "unavailable": []}
 
-    data = _load_data()
+    db = get_db()
 
-    # Quantity map
+    shop_medicines = list(db.shopmedicines.find({}))
+    shops_collection = list(db.shops.find({}))
+    medicines_collection = list(db.medicines.find({}))
+
+    shops_by_id = {shop["shopId"]: shop for shop in shops_collection}
+    medicines_by_id = {med["medicineId"]: med for med in medicines_collection}
+
+    shop_med_map: Dict[str, Dict[str, dict]] = {}
+
+    for sm in shop_medicines:
+        shop_obj_id = str(sm.get("shop"))
+        shop = next((s for s in shops_collection if str(s["_id"]) == shop_obj_id), None)
+        if not shop:
+            continue
+
+        shop_id = shop.get("shopId")
+
+        med_obj_id = str(sm.get("medicine"))
+        medicine = next((m for m in medicines_collection if str(m["_id"]) == med_obj_id), None)
+        if not medicine:
+            continue
+
+        med_id = medicine.get("medicineId")
+
+        shop_med_map.setdefault(shop_id, {})[med_id] = {
+            "price": sm.get("price", 0),
+            "quantity": sm.get("quantity", 0),
+        }
+
     if quantities:
         medicine_quantities = dict(zip(medicine_ids, quantities))
     else:
-        medicine_quantities = {med_id: 1 for med_id in medicine_ids}
+        medicine_quantities = {m: 1 for m in medicine_ids}
 
-    # Build shop lookup
-    shops_by_id = {}
-    shop_med_map = {}
+    unavailable = [
+        m for m in medicine_ids
+        if not any(m in shop_med_map.get(sid, {}) for sid in shop_med_map)
+    ]
 
-    for shop in data:
-        shop_id = shop["id"]
-
-        if shop_id not in selected_shop_ids:
-            continue
-
-        shops_by_id[shop_id] = shop
-        shop_med_map[shop_id] = {}
-
-        for med in shop.get("medicines", []):
-            shop_med_map[shop_id][med["medicine_id"]] = {
-                "price": med["price"],
-                "quantity": med["quantity"],
-            }
-
-    remaining_meds = set(medicine_ids)
+    remaining = set(medicine_ids) - set(unavailable)
     stops: List[Dict] = []
 
-    # Build stops deterministically based on selected shops
-    for shop_id in selected_shop_ids:
+    def get_distance(shop):
+        val = shop.get("distance_from_user", "9999 km")
+        try:
+            return float(val) if isinstance(val, (int, float)) else float(val.split()[0])
+        except:
+            return 9999.0
 
-        if shop_id not in shop_med_map:
-            continue
+    while remaining:
+        best_shop = None
+        best_metrics = (-1, float("inf"), float("inf"))  # coverage, price, distance
 
-        shop = shops_by_id[shop_id]
-        available_meds = set(shop_med_map[shop_id].keys())
-
-        covered = remaining_meds & available_meds
-
-        if not covered:
-            continue
-
-        medicines_at_shop = []
-        total_price = 0
-
-        for med_id in covered:
-            req_qty = medicine_quantities.get(med_id, 1)
-            med_info = shop_med_map[shop_id][med_id]
-
-            # Skip if insufficient quantity
-            if med_info["quantity"] < req_qty:
+        for shop_id, med_map in shop_med_map.items():
+            if shop_id not in shops_by_id:
                 continue
 
-            medicines_at_shop.append({
-                "medicine_id": med_id,
-                "price": med_info["price"],
-                "available_quantity": med_info["quantity"],
-                "required_quantity": req_qty,
+            covered = remaining & set(med_map.keys())
+            if not covered:
+                continue
+
+            cost = 0
+            valid = True
+
+            for m in covered:
+                req = medicine_quantities[m]
+                if med_map[m]["quantity"] < req:
+                    valid = False
+                    break
+                cost += med_map[m]["price"] * req
+
+            if not valid:
+                continue
+
+            distance = get_distance(shops_by_id[shop_id])
+
+            metrics = (len(covered), cost, distance)
+
+            if (
+                metrics[0] > best_metrics[0] or
+                (metrics[0] == best_metrics[0] and metrics[1] < best_metrics[1]) or
+                (metrics[0] == best_metrics[0] and metrics[1] == best_metrics[1] and metrics[2] < best_metrics[2])
+            ):
+                best_shop = shop_id
+                best_metrics = metrics
+
+        if not best_shop:
+            break
+
+        shop = shops_by_id[best_shop]
+        covered = remaining & set(shop_med_map[best_shop].keys())
+
+        meds = []
+        total_price = 0
+
+        for m in covered:
+            req = medicine_quantities[m]
+            info = shop_med_map[best_shop][m]
+
+            if info["quantity"] < req:
+                continue
+
+            meds.append({
+                "medicine_id": m,
+                "name": medicines_by_id.get(m, {}).get("name", m),
+                "price": info["price"],
+                "quantity": req,
             })
 
-            total_price += med_info["price"] * req_qty
-
-        if not medicines_at_shop:
-            continue
-
-        distance_km = _parse_distance(shop.get("distance_from_user", 0))
+            total_price += info["price"] * req
 
         stops.append({
-            "shop_id": shop_id,
+            "shop_id": best_shop,
             "shop_name": shop.get("name", ""),
             "distance": shop.get("distance_from_user", "0 km"),
-            "distance_km": distance_km,
-            "medicines": medicines_at_shop,
-            "medicine_count": len(medicines_at_shop),
+            "distance_km": get_distance(shop),
+            "medicines": meds,
+            "medicine_count": len(meds),
             "total_price": total_price,
         })
 
-        # Remove fulfilled medicines
-        remaining_meds -= set(m["medicine_id"] for m in medicines_at_shop)
+        remaining -= set(m["medicine_id"] for m in meds)
 
-    # Unavailable medicines
-    unavailable = [
-        {"medicine_id": med_id}
-        for med_id in remaining_meds
-    ]
-
-    # Sort by nearest shop
     stops.sort(key=lambda s: s["distance_km"])
 
-    result = {
+    return convert_objectid({
         "stops": stops,
-        "unavailable": unavailable,
+        "unavailable": [
+            {"medicine_id": m, "name": medicines_by_id.get(m, {}).get("name", m)}
+            for m in unavailable
+        ],
         "total_medicines": len(medicine_ids),
         "available_medicines": len(medicine_ids) - len(unavailable),
         "total_shops": len(stops),
-        "total_cost": sum(stop["total_price"] for stop in stops),
-    }
-
-    return result
+        "total_cost": sum(s["total_price"] for s in stops),
+    })
