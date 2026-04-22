@@ -7,37 +7,45 @@ from db import get_db
 
 
 def _load_shop_dataframe() -> pd.DataFrame:
-    db = get_db()
+    try:
+        db = get_db()
 
-    shop_medicines = list(db.shopmedicines.find({}))
-    shops_list = list(db.shops.find({}))
-    medicines_list = list(db.medicines.find({}))
+        shop_medicines = list(db.shopmedicines.find({}))
+        if not shop_medicines:
+            return pd.DataFrame(columns=[
+                "shop_id", "shop_name", "distance", "medicine_id", "price", "quantity"
+            ])
 
-    shops = {str(shop["_id"]): shop for shop in shops_list}
-    medicines = {str(med["_id"]): med for med in medicines_list}
+        shops = {str(s["_id"]): s for s in db.shops.find({})}
+        medicines = {str(m["_id"]): m for m in db.medicines.find({})}
 
-    rows = []
+        rows = []
 
-    for shop_med in shop_medicines:
-        shop_id = str(shop_med.get("shop"))
-        med_obj_id = str(shop_med.get("medicine"))
+        for sm in shop_medicines:
+            sid = str(sm.get("shop"))
+            mid = str(sm.get("medicine"))
 
-        shop = shops.get(shop_id)
-        medicine = medicines.get(med_obj_id)
+            shop = shops.get(sid)
+            med = medicines.get(mid)
 
-        if not shop or not medicine:
-            continue
+            if not shop or not med:
+                continue
 
-        rows.append({
-            "shop_id": shop.get("shopId", shop_id),
-            "shop_name": shop.get("name", ""),
-            "distance": float(shop.get("distance_from_user", 0)),
-            "medicine_id": medicine.get("medicineId", med_obj_id),
-            "price": float(shop_med.get("price", 0)),
-            "quantity": int(shop_med.get("quantity", 0)),
-        })
+            rows.append({
+                "shop_id": shop.get("shopId", sid),
+                "shop_name": shop.get("name", ""),
+                "distance": float(shop.get("distance_from_user", 0) or 0),
+                "medicine_id": med.get("medicineId", mid),
+                "price": float(sm.get("price", 0)),
+                "quantity": int(sm.get("quantity", 0)),
+            })
 
-    return pd.DataFrame(rows)
+        return pd.DataFrame(rows)
+
+    except Exception:
+        return pd.DataFrame(columns=[
+            "shop_id", "shop_name", "distance", "medicine_id", "price", "quantity"
+        ])
 
 
 def _normalize(series: pd.Series) -> pd.Series:
@@ -49,80 +57,96 @@ def _normalize(series: pd.Series) -> pd.Series:
 def find_best_shops(
     required_medicines: Dict[str, int],
     top_n: int = 3,
+    top_k_shops: int = 25,
     w_distance: float = 0.6,
     w_price: float = 0.4,
 ) -> List[Dict]:
 
-    df = _load_shop_dataframe()
+    if not required_medicines:
+        return []
 
-    if df.empty or not required_medicines:
+    df = _load_shop_dataframe()
+    if df.empty:
         return []
 
     required_set = set(required_medicines.keys())
-    results = []
+
+    shop_scores = []
 
     for shop_id, group in df.groupby("shop_id"):
         covered = required_set & set(group["medicine_id"])
-
         if not covered:
             continue
 
-        valid = True
-        total_price = 0
+        est_price = sum(
+            group[group["medicine_id"] == m]["price"].min()
+            for m in covered
+        )
 
-        for med in covered:
-            req_qty = required_medicines[med]
-            row = group[group["medicine_id"] == med].sort_values("price").iloc[0]
+        distance = group["distance"].iloc[0]
+        coverage = len(covered) / len(required_set)
 
-            if row["quantity"] < req_qty:
-                valid = False
-                break
-
-            total_price += row["price"] * req_qty
-
-        if not valid:
-            continue
-
-        results.append({
-            "shops": [shop_id],
-            "distance": group["distance"].iloc[0],
-            "price": total_price,
-            "coverage": len(covered) / len(required_set),
+        shop_scores.append({
+            "shop_id": shop_id,
+            "group": group,
+            "score": est_price + distance * 10,
+            "coverage": coverage
         })
 
-    shop_groups = list(df.groupby("shop_id"))
+    if not shop_scores:
+        return []
 
-    for (id1, g1), (id2, g2) in combinations(shop_groups, 2):
-        combined = pd.concat([g1, g2])
+    shop_scores.sort(key=lambda x: (-x["coverage"], x["score"]))
+    shop_scores = shop_scores[:top_k_shops]
+
+    shop_groups = [(s["shop_id"], s["group"]) for s in shop_scores]
+
+    results = []
+
+    def evaluate(groups, shop_ids):
+        combined = pd.concat(groups)
 
         covered = required_set & set(combined["medicine_id"])
-
         if not covered:
-            continue
+            return None
 
-        valid = True
         total_price = 0
 
         for med in covered:
             req_qty = required_medicines[med]
-            med_rows = combined[combined["medicine_id"] == med]
+            rows = combined[combined["medicine_id"] == med]
 
-            if med_rows["quantity"].sum() < req_qty:
-                valid = False
-                break
+            if rows["quantity"].sum() < req_qty:
+                return None
 
-            cheapest = med_rows.sort_values("price").iloc[0]
+            cheapest = rows.sort_values("price").iloc[0]
             total_price += cheapest["price"] * req_qty
 
-        if not valid:
-            continue
+        total_distance = sum(g["distance"].iloc[0] for g in groups)
 
-        results.append({
-            "shops": [id1, id2],
-            "distance": g1["distance"].iloc[0] + g2["distance"].iloc[0],
+        return {
+            "shops": shop_ids,
+            "distance": total_distance,
             "price": total_price,
             "coverage": len(covered) / len(required_set),
-        })
+            "covered_count": len(covered),
+            "required_count": len(required_set),
+        }
+
+    for sid, g in shop_groups:
+        res = evaluate([g], [sid])
+        if res:
+            results.append(res)
+
+    for (id1, g1), (id2, g2) in combinations(shop_groups, 2):
+        res = evaluate([g1, g2], [id1, id2])
+        if res:
+            results.append(res)
+
+    for (id1, g1), (id2, g2), (id3, g3) in combinations(shop_groups, 3):
+        res = evaluate([g1, g2, g3], [id1, id2, id3])
+        if res:
+            results.append(res)
 
     if not results:
         return []
