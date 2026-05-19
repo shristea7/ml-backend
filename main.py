@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from services.medicine_lookup import detect_medicine_query
 from services.shop_optimizer import find_best_shops, find_best_multi_shop_solution
 from services.symptoms_model import detect_symptoms
-from services.visit_planner import optimize_visit_plan
+from services.visit_plan_optimizer import optimize_visit_plan
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Medley API")
