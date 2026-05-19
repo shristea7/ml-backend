@@ -1,6 +1,6 @@
 from sentence_transformers import SentenceTransformer, util
 
-from medicine_lookup import _fetch_all_medicines  # shared — no duplicate DB call
+from services.medicine_lookup import _fetch_all_medicines  # shared — no duplicate DB call
 
 # Initialize embedding model (loaded once at module level)
 model = SentenceTransformer('all-MiniLM-L6-v2')
