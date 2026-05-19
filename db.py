@@ -1,4 +1,3 @@
-"""MongoDB connection and utilities for the backend."""
 import os
 import threading
 
@@ -16,17 +15,12 @@ _lock = threading.Lock()  # safe for multi-threaded servers (Flask, FastAPI, etc
 
 
 def get_db():
-    """
-    Return the MongoDB database instance, creating the connection if needed.
-    Thread-safe — safe to call from concurrent request handlers.
-    """
     global _client, _db
 
     if _db is not None:
         return _db
 
     with _lock:
-        # Double-checked locking: another thread may have initialised while we waited
         if _db is not None:
             return _db
 
@@ -37,9 +31,10 @@ def get_db():
                 connectTimeoutMS=5000,
                 socketTimeoutMS=10_000,
             )
-            _client.admin.command("ping")   # fail fast if unreachable
+            _client.admin.command('ping')
             _db = _client.get_database()
-            print(f"[MongoDB] Connected → {MONGODB_URI}")
+            print(f"[MongoDB] Connected → database name: '{_db.name}'")
+            print(f"[MongoDB] Collections: {_db.list_collection_names()}")
         except (ServerSelectionTimeoutError, ConnectionFailure) as exc:
             print(f"[MongoDB] Could not connect to {MONGODB_URI}: {exc}")
             raise
@@ -48,7 +43,6 @@ def get_db():
 
 
 def close_db():
-    """Close the MongoDB connection and reset the cached instances."""
     global _client, _db
 
     with _lock:
