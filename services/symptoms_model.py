@@ -4,7 +4,7 @@ from services.medicine_lookup import _fetch_all_medicines
 
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
-ef detect_symptoms(user_input: str, top_k: int = 7) -> list:
+def detect_symptoms(user_input: str, top_k: int = 7) -> list:
     if not user_input or not user_input.strip():
         return []
 
