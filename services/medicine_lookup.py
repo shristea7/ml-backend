@@ -4,10 +4,7 @@ from db import get_db
 
 
 def _fetch_all_medicines() -> List[Dict]:
-    """
-    Single source of truth for fetching all medicine documents from MongoDB.
-    Imported by shop_optimizer.py so both files share one DB call pattern.
-    """
+    
     try:
         return list(get_db().medicines.find({}))
     except Exception as exc:
@@ -18,14 +15,6 @@ def _fetch_all_medicines() -> List[Dict]:
 def detect_medicine_query(text: str, max_results: int = 5) -> List[Dict]:
     """
     Find medicines matching *text* using tiered fuzzy matching.
-
-    Tiers (score):
-      100 – exact name/brand match
-       60 – name substring match
-       50 – uses/indication match
-       40 – brand substring match
-       25 – word-prefix match (>=3-char words only)
-
     Returns list of dicts: {id, name, brand, score}
     """
     text_lower = text.lower().strip()
@@ -44,7 +33,6 @@ def detect_medicine_query(text: str, max_results: int = 5) -> List[Dict]:
         brand_l = med.get("brand", "").lower()
         uses_l  = [u.lower() for u in med.get("uses", [])]
 
-        # Direct ID match — handles cases where caller passes "MED001" etc.
         if med.get("medicineId", "").lower() == text_lower:
             score = 100
         elif name_l == text_lower or brand_l == text_lower:
