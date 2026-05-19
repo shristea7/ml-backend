@@ -4,8 +4,8 @@ from typing import Dict, List, Optional
 from bson import ObjectId
 
 from db import get_db
-from medicine_lookup import _fetch_all_medicines
-from shop_optimizer import (
+from services.medicine_lookup import _fetch_all_medicines
+from services.shop_optimizer import (
     _build_candidates,
     _load_shop_dataframe,
     _greedy_cover,
