@@ -1,14 +1,12 @@
-"""FastAPI entry point for the Medley backend."""
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# ── service imports (match actual filenames) ─────────────────────────────────
 from services.medicine_lookup import detect_medicine_query
 from services.shop_optimizer import find_best_shops, find_best_multi_shop_solution
 from services.symptoms_model import detect_symptoms
 from services.visit_plan_optimizer import optimize_visit_plan
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 app = FastAPI(title="Medley API")
 
@@ -20,8 +18,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ── request models ────────────────────────────────────────────────────────────
 
 class SymptomsRequest(BaseModel):
     symptoms: str = Field(..., description="User symptoms in natural language")
@@ -49,8 +45,6 @@ class OptimizeCartRequest(BaseModel):
         description="If true, also return the best multi-shop combination plan",
     )
 
-
-# ── endpoints ─────────────────────────────────────────────────────────────────
 
 @app.post("/symptoms")
 def symptoms_endpoint(request: SymptomsRequest):
@@ -202,8 +196,6 @@ def chat_endpoint(request: SymptomsRequest | MedicinesRequest):
         "best_shops":        find_best_shops(med_ids, top_n=3),
     }
 
-
-# ── dev server ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
